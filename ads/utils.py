@@ -1,14 +1,28 @@
 import requests
+import certifi
 from django.conf import settings
 
 def fetch_orders_from_shopmonkey(phone):
-    url = "https://api.shopmonkey.io/v1/orders"
-    headers = {"Authorization": f"Bearer {settings.SHOPMONKEY_API_KEY}"}
-    resp = requests.get(url, headers=headers, params={"customerPhone": phone})
-    resp.raise_for_status()
-    return resp.json()  # adjust to actual API structure
+    url = "https://api.shopmonkey.cloud/v3/orders"
+    headers = {
+        "Authorization": f"Bearer {settings.SHOPMONKEY_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    params = {"customerPhone": phone}
 
-def send_google_conversion(conv_id, gclid, value):
-    # TODO: Implement Google Ads API client upload
-    # Use google-ads-python or REST endpoint
-    pass
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=15,
+            verify=certifi.where()  # use certifi bundle
+        )
+        print("Shopmonkey API status:", resp.status_code)
+        print("Shopmonkey API response:", resp.text)
+
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.RequestException as e:
+        print("Shopmonkey API error:", str(e))
+        return None

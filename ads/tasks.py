@@ -4,39 +4,41 @@ from django.utils.dateparse import parse_datetime
 from celery import shared_task
 from django.db import transaction
 from google.ads.googleads.errors import GoogleAdsException
+from django.conf import settings
 
 from .models import CallRecord, ShopmonkeyOrder, OfflineConversion
 from .services.shopmonkey import fetch_orders_by_phone, ShopmonkeyWAFBlocked
 from ads.services.google_ads import upload_gclid_conversion, format_ads_datetime
-from django.conf import settings
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def process_call_record(self, record_id: int):
     """
-    1) Read CallRecord (no lock) to get phone/gclid.
-    2) Fetch Shopmonkey orders (no DB lock held).
-    3) Open atomic block, lock CallRecord, re-check processed, upsert orders,
-       upload conversions (network), mark processed. Minimal lock window.
+    1) Read CallRecord (lightweight fields).
+    2) Fetch Shopmonkey orders (network).
+    3) Lock record, upsert orders + upload conversions.
     """
-    # 1) Read lightweight fields without locking
+
+    # 1) Fetch base record
     base = CallRecord.objects.only("id", "phone", "gclid", "processed").get(id=record_id)
     phone = base.phone
     gclid = base.gclid
 
-    # 2) External IO first (no DB lock held)
+    # 2) External API call first
     try:
         orders = fetch_orders_by_phone(phone)
+        if not orders:
+            return "no_orders_found"
     except ShopmonkeyWAFBlocked:
-        # Cloudflare/WAF HTML 403 — don't keep hammering; surface and stop.
+        # Stop hammering if WAF is blocking
         return "waf_blocked"
     except Exception as e:
-        # Network/transient problems — retry
+        # Retry on transient errors
         raise self.retry(exc=e, countdown=60)
 
     created_any = False
 
-    # 3) Critical section: lock the row and re-check processed
+    # 3) Critical section: lock & process
     with transaction.atomic():
         record = CallRecord.objects.select_for_update().get(id=record_id)
         if record.processed:
@@ -44,7 +46,7 @@ def process_call_record(self, record_id: int):
 
         now_dt = timezone.now()
 
-        for o in orders or []:
+        for o in orders:
             archived = bool(o.get("archived"))
             try:
                 total_cents = int(o.get("totalCostCents") or 0)
@@ -56,7 +58,7 @@ def process_call_record(self, record_id: int):
 
             order_id = str(o.get("id") or "")
 
-            # Mirror order
+            # Save order
             order, _ = ShopmonkeyOrder.objects.update_or_create(
                 order_id=order_id,
                 defaults={
@@ -81,18 +83,16 @@ def process_call_record(self, record_id: int):
                 defaults={"value": value, "uploaded_at": None},
             )
             if not created and conv.uploaded_at:
-                # already uploaded
-                continue
+                continue  # already uploaded
 
-            # Parse completion time if present (e.g., "completedAt": ISO string)
             completed_iso = o.get("completedAt") or o.get("completed_at")
             completed_dt = parse_datetime(completed_iso) if isinstance(completed_iso, str) else None
             conv_time = format_ads_datetime(completed_dt or now_dt)
 
-            # Upload to Google Ads (allow retry on transient Ads errors)
+            # Upload conversion
             try:
                 resp = upload_gclid_conversion(
-                    customer_id=str(settings.GOOGLE_CUSTOMER_ID),  # no dashes
+                    customer_id=str(settings.GOOGLE_CUSTOMER_ID).replace("-", ""),
                     conversion_action_resource=settings.GOOGLE_CONVERSION_ACTION_RESOURCE,
                     gclid=gclid,
                     conversion_date_time=conv_time,
@@ -101,10 +101,9 @@ def process_call_record(self, record_id: int):
                     order_id=order_id or None,
                 )
             except GoogleAdsException as ex:
-                # Retry only on transient / rate-limit / 5xx-like issues (let caller decide)
                 raise self.retry(exc=ex, countdown=90)
 
-            # Persist upload result (store resource names for audit)
+            # Save Google Ads response
             results = getattr(resp, "results", []) or []
             try:
                 serialized_results = [
@@ -119,7 +118,7 @@ def process_call_record(self, record_id: int):
             conv.save(update_fields=["upload_response", "uploaded_at"])
             created_any = True
 
-        # Mark processed to avoid re-firing on the same call record.
+        # Mark as processed
         record.processed = True
         record.save(update_fields=["processed"])
 
