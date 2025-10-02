@@ -1,20 +1,14 @@
 import json
 import time
+import logging
 from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import CallRecord
 from .tasks import process_call_record
 
-
-import json
-import time
-from django.conf import settings
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from .models import CallRecord
-from .tasks import process_call_record
-
+# Configure a logger for this module
+logger = logging.getLogger(__name__)
 
 @csrf_exempt
 def callrail_webhook(request):
@@ -23,6 +17,7 @@ def callrail_webhook(request):
     Accepts token via query string (?token=...) or header (X-Token).
     Supports both JSON body and query params.
     """
+
     if request.method != "POST":
         return JsonResponse({"error": "Invalid method"}, status=405)
 
@@ -30,6 +25,7 @@ def callrail_webhook(request):
     query_token = request.GET.get("token")
     header_token = request.headers.get("X-Token")
     if query_token != settings.CALLRAIL_WEBHOOK_TOKEN and header_token != settings.CALLRAIL_WEBHOOK_TOKEN:
+        logger.warning("Unauthorized webhook attempt. Headers: %s | Params: %s", request.headers, request.GET.dict())
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
     # --- Try to parse JSON or fallback to query params
@@ -37,11 +33,17 @@ def callrail_webhook(request):
     try:
         if request.body:
             data = json.loads(request.body.decode("utf-8"))
+            logger.info("Webhook received JSON body: %s", data)
     except json.JSONDecodeError:
-        pass
+        logger.warning("Invalid JSON body. Falling back to form/query params.")
 
-    if not data:  # fallback to query params
+    if not data and request.POST:
+        data = request.POST.dict()
+        logger.info("Webhook received form-encoded body: %s", data)
+
+    if not data:
         data = request.GET.dict()
+        logger.info("Webhook received query params: %s", data)
 
     # --- Extract fields
     call_id = data.get("id") or data.get("resource_id") or f"call-{int(time.time())}"
@@ -57,6 +59,9 @@ def callrail_webhook(request):
     caller_country = data.get("callercountry")
     tracking_number = data.get("trackingnum")
     recording_url = data.get("recording")
+
+    logger.info("Parsed webhook fields: call_id=%s, phone=%s, gclid=%s, lead_status=%s",
+                call_id, phone, gclid, lead_status)
 
     # --- Save or reuse CallRecord
     record, created = CallRecord.objects.get_or_create(
@@ -76,9 +81,16 @@ def callrail_webhook(request):
         },
     )
 
+    if created:
+        logger.info("New CallRecord created: %s", record.id)
+    else:
+        logger.info("Duplicate CallRecord received: %s", record.id)
+
     # --- Trigger async processing if lead is qualified
     if lead_status in ["good", "qualified"]:
+        logger.info("Lead is qualified. Triggering process_call_record for record %s", record.id)
         process_call_record.delay(record.id)
+    else:
+        logger.info("Lead status not qualified: %s", lead_status)
 
     return JsonResponse({"status": "received"})
-
