@@ -14,36 +14,30 @@ from ads.services.google_ads import upload_gclid_conversion, format_ads_datetime
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def process_call_record(self, record_id: int):
     """
-    Process a call record by:
-    1) Fetching the CallRecord.
-    2) Looking up Shopmonkey orders for the phone.
-    3) Uploading offline conversions to Google Ads.
+    1. Read CallRecord.
+    2. Fetch Shopmonkey orders via phone → customerId → orders.
+    3. Lock record, upsert orders + upload conversions.
     """
 
-    # 1) Fetch base record
+    # Step 1: Fetch base record
     base = CallRecord.objects.only("id", "phone", "gclid", "processed").get(id=record_id)
     phone = base.phone
     gclid = base.gclid
 
-    # 2) Fetch orders from Shopmonkey
+    # Step 2: External API call (Shopmonkey)
     try:
         orders = fetch_orders_by_phone(phone)
-
-        if orders is None:
-            return f"fetch_failed:{phone}"
-        if isinstance(orders, dict) and orders.get("no_customer"):
-            return f"no_customer_found:{phone}"
         if not orders:
-            return f"customer_found_but_no_orders:{phone}"
-
+            return "no_orders_found"
     except ShopmonkeyWAFBlocked:
         return "waf_blocked"
     except Exception as e:
+        # Retry for transient network errors
         raise self.retry(exc=e, countdown=60)
 
     created_any = False
 
-    # 3) Process inside a DB transaction
+    # Step 3: Critical section
     with transaction.atomic():
         record = CallRecord.objects.select_for_update().get(id=record_id)
         if record.processed:
@@ -54,17 +48,17 @@ def process_call_record(self, record_id: int):
         for o in orders:
             archived = bool(o.get("archived"))
             try:
-                total_cents = int(o.get("totalCostCents") or 0)
+                total_cents = int(o.get("totalCostCents") or o.get("totalCostCents") or 0)
             except (TypeError, ValueError):
                 total_cents = 0
 
-            # Only process completed orders with value
+            # Only process archived + paid orders with value
             if not (archived and total_cents > 0):
                 continue
 
             order_id = str(o.get("id") or "")
 
-            # Save or update Shopmonkey order
+            # Save order
             order, _ = ShopmonkeyOrder.objects.update_or_create(
                 order_id=order_id,
                 defaults={
@@ -78,23 +72,26 @@ def process_call_record(self, record_id: int):
             if not gclid:
                 continue
 
-            # Calculate value
+            # Compute conversion value
             try:
                 value = Decimal(total_cents) / Decimal(100)
             except (InvalidOperation, ZeroDivisionError):
                 value = Decimal("0")
 
-            # Save or update conversion record
             conv, created = OfflineConversion.objects.get_or_create(
                 gclid=gclid,
                 order=order,
                 defaults={"value": value, "uploaded_at": None},
             )
+
             if not created and conv.uploaded_at:
                 continue  # already uploaded
 
-            # Parse conversion time
-            completed_iso = o.get("completedAt") or o.get("completed_at")
+            completed_iso = (
+                o.get("completedAt") or
+                o.get("completed_at") or
+                o.get("orderCreatedDate")
+            )
             completed_dt = parse_datetime(completed_iso) if isinstance(completed_iso, str) else None
             conv_time = format_ads_datetime(completed_dt or now_dt)
 
@@ -112,7 +109,7 @@ def process_call_record(self, record_id: int):
             except GoogleAdsException as ex:
                 raise self.retry(exc=ex, countdown=90)
 
-            # Save Google Ads response
+            # Save upload response
             results = getattr(resp, "results", []) or []
             try:
                 serialized_results = [
@@ -124,14 +121,12 @@ def process_call_record(self, record_id: int):
 
             conv.upload_response = serialized_results
             conv.uploaded_at = timezone.now()
-            conv.save(update_fields=["upload_response", "uploaded_at"])
+            conv.uploaded = True
+            conv.save(update_fields=["upload_response", "uploaded_at", "uploaded"])
             created_any = True
 
         # Mark as processed
         record.processed = True
         record.save(update_fields=["processed"])
 
-    if created_any:
-        return f"orders_processed:{phone}"
-    else:
-        return f"orders_found_but_not_qualified:{phone}"
+    return "ok" if created_any else "no_matching_orders"
