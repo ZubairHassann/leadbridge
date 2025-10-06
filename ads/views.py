@@ -6,7 +6,10 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import CallRecord
 from .tasks import process_call_record
-
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
+from .models import CallRecord, ShopmonkeyOrder, OfflineConversion
+from .serializers import CallRecordSerializer, ShopmonkeyOrderSerializer, OfflineConversionSerializer
 # Configure a logger for this module
 logger = logging.getLogger(__name__)
 
@@ -94,3 +97,35 @@ def callrail_webhook(request):
         logger.info("Lead status not qualified: %s", lead_status)
 
     return JsonResponse({"status": "received"})
+
+
+
+
+@api_view(["GET"])
+def callrail_records(request):
+    """
+    List all CallRail webhook records.
+    """
+    records = CallRecord.objects.all().order_by("-created_at")
+    serializer = CallRecordSerializer(records, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["GET"])
+def shopmonkey_orders(request):
+    """
+    List all Shopmonkey orders fetched from API.
+    """
+    orders = ShopmonkeyOrder.objects.all().order_by("-fetched_at")
+    serializer = ShopmonkeyOrderSerializer(orders, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["GET"])
+def offline_conversions(request):
+    """
+    List all Google Ads conversions uploaded.
+    """
+    conversions = OfflineConversion.objects.all().order_by("-created_at")
+    serializer = OfflineConversionSerializer(conversions, many=True)
+    return Response(serializer.data)
