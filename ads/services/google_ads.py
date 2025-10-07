@@ -100,6 +100,7 @@ def upload_gclid_conversion(
     request.customer_id = str(customer_id)
     request.conversions.append(conversion)
     request.validate_only = validate_only
+    request.partial_failure = True  # continue processing if some conversions fail
 
     try:
         response = service.upload_click_conversions(request=request)
