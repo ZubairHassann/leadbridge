@@ -16,6 +16,8 @@ CALLRAIL_WEBHOOK_TOKEN = config('CALLRAIL_WEBHOOK_TOKEN', default='')
 GOOGLE_DEVELOPER_TOKEN = config('GOOGLE_DEVELOPER_TOKEN', default='')
 GOOGLE_CUSTOMER_ID = config('GOOGLE_CUSTOMER_ID', default='')
 GOOGLE_CONVERSION_ACTION_RESOURCE = config('GOOGLE_CONVERSION_ACTION_RESOURCE', default='')
+GOOGLE_CLIENT_SECRET = config('GOOGLE_CLIENT_SECRET', default='')
+GOOGLE_REFRESH_TOKEN = config('GOOGLE_REFRESH_TOKEN', default='')
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
