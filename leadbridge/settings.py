@@ -13,6 +13,10 @@ from decouple import config
 from pathlib import Path
 SHOPMONKEY_API_KEY = config('SHOPMONKEY_API_KEY')
 CALLRAIL_WEBHOOK_TOKEN = config('CALLRAIL_WEBHOOK_TOKEN', default='')
+GOOGLE_DEVELOPER_TOKEN = config('GOOGLE_DEVELOPER_TOKEN', default='')
+GOOGLE_CUSTOMER_ID = config('GOOGLE_CUSTOMER_ID', default='')
+GOOGLE_CONVERSION_ACTION_RESOURCE = config('GOOGLE_CONVERSION_ACTION_RESOURCE', default='')
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
