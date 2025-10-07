@@ -96,12 +96,12 @@ def upload_gclid_conversion(
     if order_id:
         conversion.order_id = str(order_id)
 
-    request = client.get_type("UploadClickConversionsRequest")(
-    customer_id=str(customer_id),
-    conversions=[conversion],
-    partial_failure=True,  #  must be set at initialization
-    validate_only=validate_only,
-)
+    request = client.get_type("UploadClickConversionsRequest")
+    request.customer_id = str(customer_id)
+    request.conversions.append(conversion)
+    request.partial_failure = True  #required for Ads v21
+    request.validate_only = validate_only
+
 
 
     try:
