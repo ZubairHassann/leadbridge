@@ -32,20 +32,23 @@ def format_ads_datetime(dt: datetime) -> str:
 # ==============================================================
 def build_client() -> GoogleAdsClient:
     """
-    Builds a GoogleAdsClient from Django settings.
+    Builds a GoogleAdsClient from Django settings,
+    including manager (MCC) and client Ads account IDs.
     """
-    login_customer_id = getattr(settings, "GOOGLE_LOGIN_CUSTOMER_ID", None)
     cfg = {
         "developer_token": settings.GOOGLE_DEVELOPER_TOKEN,
         "use_proto_plus": True,
         "refresh_token": settings.GOOGLE_REFRESH_TOKEN,
         "client_id": settings.GOOGLE_CLIENT_ID,
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
+
+        # ⚙️ Add these 2 keys 👇
+        "login_customer_id": "7671185681",   # your MCC / manager account ID
+        "linked_customer_id": "4066522290",  # your actual Ads client account
     }
-    if login_customer_id:
-        cfg["login_customer_id"] = str(login_customer_id)
 
     return GoogleAdsClient.load_from_dict(cfg)
+
 
 
 # ==============================================================
