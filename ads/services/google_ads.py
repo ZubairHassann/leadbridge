@@ -1,7 +1,7 @@
 from __future__ import annotations
-
 from typing import Optional
 from datetime import datetime
+import json
 
 from django.conf import settings
 from django.utils import timezone
@@ -10,6 +10,9 @@ from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
 
+# ==============================================================
+# 🕒 Helper — Format date for Google Ads
+# ==============================================================
 def format_ads_datetime(dt: datetime) -> str:
     """
     Google Ads expects: 'YYYY-MM-DD HH:MM:SS±HH:MM' (account timezone offset included).
@@ -18,24 +21,18 @@ def format_ads_datetime(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = timezone.make_aware(dt, timezone.get_current_timezone())
 
-    # Python's %z is like +0500; convert to +05:00
+    # Python's %z gives +0500; convert to +05:00
     offset = dt.strftime("%z")  # e.g. '+0500'
     offset_colon = f"{offset[:-2]}:{offset[-2:]}" if offset else "+00:00"
     return f"{dt.strftime('%Y-%m-%d %H:%M:%S')}{offset_colon}"
 
 
+# ==============================================================
+# ⚙️ Helper — Build Google Ads API Client
+# ==============================================================
 def build_client() -> GoogleAdsClient:
     """
     Builds a GoogleAdsClient from Django settings.
-
-    Required:
-      - GOOGLE_DEVELOPER_TOKEN
-      - GOOGLE_REFRESH_TOKEN
-      - GOOGLE_CLIENT_ID
-      - GOOGLE_CLIENT_SECRET
-
-    Optional:
-      - GOOGLE_LOGIN_CUSTOMER_ID (manager account). If absent, we log in directly to the customer.
     """
     login_customer_id = getattr(settings, "GOOGLE_LOGIN_CUSTOMER_ID", None)
     cfg = {
@@ -51,12 +48,15 @@ def build_client() -> GoogleAdsClient:
     return GoogleAdsClient.load_from_dict(cfg)
 
 
+# ==============================================================
+# 🚀 Upload a single offline conversion (GCLID-based)
+# ==============================================================
 def upload_gclid_conversion(
     *,
     customer_id: str,
-    conversion_action_resource: str,  # e.g. "customers/1234567890/conversionActions/1122334455"
+    conversion_action_resource: str,
     gclid: str,
-    conversion_date_time: str,        # formatted via format_ads_datetime(...)
+    conversion_date_time: str,
     value: float,
     currency: str = None,
     order_id: Optional[str] = None,
@@ -65,18 +65,8 @@ def upload_gclid_conversion(
     """
     Upload a single GCLID-based offline conversion (ClickConversion).
 
-    Args:
-        customer_id: The Ad account numeric ID without dashes, e.g. "1234567890".
-        conversion_action_resource: Full resource name for the conversion action.
-        gclid: The GCLID captured at click time.
-        conversion_date_time: 'YYYY-MM-DD HH:MM:SS±HH:MM' (use format_ads_datetime()).
-        value: Monetary value of the conversion.
-        currency: ISO currency code (default comes from settings.GOOGLE_CURRENCY_CODE or 'USD').
-        order_id: Optional order/external ID for deduplication.
-        validate_only: If True, Google will validate but not persist (dry-run).
-
     Returns:
-        UploadClickConversionsResponse
+        dict: JSON-serializable response with results and/or partial failure.
     """
     if not currency:
         currency = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
@@ -99,21 +89,50 @@ def upload_gclid_conversion(
     request = client.get_type("UploadClickConversionsRequest")
     request.customer_id = str(customer_id)
     request.conversions.append(conversion)
-    request.partial_failure = True  #required for Ads v21
+    request.partial_failure = True
     request.validate_only = validate_only
-
-
 
     try:
         response = service.upload_click_conversions(request=request)
-        # Optional: You can inspect response.results for partial errors handling per-conversion.
-        return response
+        results = []
+
+        # Extract detailed results
+        for res in response.results:
+            res_data = {
+                "gclid": getattr(res, "gclid", None),
+                "conversion_action": getattr(res, "conversion_action", None),
+                "success": bool(getattr(res, "gclid", None)),
+            }
+            results.append(res_data)
+
+        # Partial failure handling
+        partial_error = None
+        if response.partial_failure_error:
+            partial_error = response.partial_failure_error.message
+            print(f"⚠️ Partial failure from Google Ads: {partial_error}")
+        else:
+            print("✅ Conversion upload successful:", results)
+
+        # Return structured dict (easy to log or save in DB)
+        return {
+            "results": results,
+            "partial_failure": partial_error,
+        }
+
     except GoogleAdsException as ex:
-        # Bubble up so caller (e.g., Celery task) can retry/backoff
-        raise
+        # Capture full failure info for logs
+        error_info = {
+            "request_id": ex.request_id,
+            "failure": str(ex.failure),
+            "error_code": ex.error.code().name if ex.error else None,
+        }
+        print("🚨 GoogleAdsException:", json.dumps(error_info, indent=2))
+        return {"error": error_info}
 
 
-# ---- Backward compatibility shim ----
+# ==============================================================
+# 🧩 Legacy Wrapper (Backward Compatibility)
+# ==============================================================
 def send_offline_conversion_to_google(
     gclid: str,
     conversion_time: str,
@@ -124,7 +143,7 @@ def send_offline_conversion_to_google(
     Legacy wrapper for existing code paths.
     Uses settings.GOOGLE_CUSTOMER_ID and settings.GOOGLE_CONVERSION_ACTION_RESOURCE.
     """
-    customer_id = str(settings.GOOGLE_CUSTOMER_ID)  # upload account ID (no dashes)
+    customer_id = str(settings.GOOGLE_CUSTOMER_ID)
     action_resource = settings.GOOGLE_CONVERSION_ACTION_RESOURCE
 
     return upload_gclid_conversion(
