@@ -2,6 +2,7 @@ import json
 import time
 import logging
 from django.conf import settings
+from rest_framework.pagination import PageNumberPagination
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import CallRecord
@@ -104,11 +105,20 @@ def callrail_webhook(request):
 @api_view(["GET"])
 def callrail_records(request):
     """
-    List all CallRail webhook records.
+    List all CallRail webhook records with pagination.
     """
     records = CallRecord.objects.all().order_by("-created_at")
-    serializer = CallRecordSerializer(records, many=True)
-    return Response(serializer.data)
+
+    # Initialize paginator
+    paginator = PageNumberPagination()
+    paginator.page_size = 20  # you can adjust this (e.g., 10, 50, etc.)
+    
+    # Paginate queryset
+    result_page = paginator.paginate_queryset(records, request)
+    serializer = CallRecordSerializer(result_page, many=True)
+    
+    # Return paginated response
+    return paginator.get_paginated_response(serializer.data)
 
 
 @api_view(["GET"])
