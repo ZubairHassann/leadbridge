@@ -161,3 +161,46 @@ def send_offline_conversion_to_google(
         order_id=external_id,
         validate_only=bool(getattr(settings, "GOOGLE_VALIDATE_ONLY", False)),
     )
+
+def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conversion_time=None, order_id=None):
+    """
+    Uploads Enhanced Conversion using hashed identifiers.
+    """
+    from google.ads.googleads.client import GoogleAdsClient
+
+    client = GoogleAdsClient.load_from_dict({
+        "developer_token": settings.GOOGLE_DEVELOPER_TOKEN,
+        "refresh_token": settings.GOOGLE_REFRESH_TOKEN,
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "client_secret": settings.GOOGLE_CLIENT_SECRET,
+    })
+
+    service = client.get_service("ConversionUploadService")
+    conversion = client.get_type("ClickConversion")
+
+    conversion.conversion_action = settings.GOOGLE_CONVERSION_ACTION_RESOURCE
+    conversion.conversion_value = float(value)
+    conversion.conversion_date_time = conversion_time
+    conversion.currency_code = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
+    if order_id:
+        conversion.order_id = str(order_id)
+
+    # Add user identifiers
+    if phone_hash:
+        uid = conversion.user_identifiers.add()
+        uid.hashed_phone_number = phone_hash
+        uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
+
+    if email_hash:
+        uid = conversion.user_identifiers.add()
+        uid.hashed_email = email_hash
+        uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
+
+    request = client.get_type("UploadClickConversionsRequest")
+    request.customer_id = str(settings.GOOGLE_CUSTOMER_ID).replace("-", "")
+    request.conversions.append(conversion)
+    request.partial_failure = True
+
+    response = service.upload_click_conversions(request=request)
+    results = [{"conversion_action": r.conversion_action, "success": True} for r in response.results]
+    return {"results": results}
