@@ -5,15 +5,49 @@ from django.conf import settings
 from rest_framework.pagination import PageNumberPagination
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from .models import CallRecord
-from .tasks import process_call_record
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
+
 from .models import CallRecord, ShopmonkeyOrder, OfflineConversion
-from .serializers import CallRecordSerializer, ShopmonkeyOrderSerializer, OfflineConversionSerializer
-# Configure a logger for this module
+from .tasks import process_call_record
+from .serializers import (
+    CallRecordSerializer,
+    ShopmonkeyOrderSerializer,
+    OfflineConversionSerializer,
+)
+
+# ---------------------------------------------------------
+# Logger setup
+# ---------------------------------------------------------
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------
+# Helper function — determines if a call is qualified
+# ---------------------------------------------------------
+def is_call_qualified(lead_status: str, payload: dict) -> bool:
+    """
+    Determines whether a call qualifies for processing.
+    Either by lead_status or by presence of 'qualified' in milestones.
+    """
+    milestones = (payload.get("milestones") or {})
+    has_qualified_milestone = "qualified" in milestones
+
+    return (
+        lead_status in [
+            "good",
+            "good_lead",
+            "qualified",
+            "qualified_lead",
+            "previously_marked_good_lead",
+        ]
+        or has_qualified_milestone
+    )
+
+
+# ---------------------------------------------------------
+# CallRail Webhook
+# ---------------------------------------------------------
 @csrf_exempt
 def callrail_webhook(request):
     """
@@ -28,11 +62,18 @@ def callrail_webhook(request):
     # --- Security: token check
     query_token = request.GET.get("token")
     header_token = request.headers.get("X-Token")
-    if query_token != settings.CALLRAIL_WEBHOOK_TOKEN and header_token != settings.CALLRAIL_WEBHOOK_TOKEN:
-        logger.warning("Unauthorized webhook attempt. Headers: %s | Params: %s", request.headers, request.GET.dict())
+    if (
+        query_token != settings.CALLRAIL_WEBHOOK_TOKEN
+        and header_token != settings.CALLRAIL_WEBHOOK_TOKEN
+    ):
+        logger.warning(
+            "Unauthorized webhook attempt. Headers: %s | Params: %s",
+            request.headers,
+            request.GET.dict(),
+        )
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    # --- Try to parse JSON or fallback to query params
+    # --- Parse body
     data = {}
     try:
         if request.body:
@@ -51,12 +92,15 @@ def callrail_webhook(request):
 
     # --- Extract fields
     call_id = data.get("id") or data.get("resource_id") or f"call-{int(time.time())}"
-    phone = data.get("caller_number") or data.get("callernum") or data.get("customer_phone_number")
+    phone = (
+        data.get("caller_number")
+        or data.get("callernum")
+        or data.get("customer_phone_number")
+    )
     gclid = data.get("gclid")
     lead_status = (data.get("lead_status") or data.get("callsource") or "").lower()
     duration = data.get("duration")
 
-    # Extra metadata
     caller_name = data.get("callername")
     caller_city = data.get("callercity")
     caller_state = data.get("callerstate")
@@ -64,10 +108,15 @@ def callrail_webhook(request):
     tracking_number = data.get("trackingnum")
     recording_url = data.get("recording")
 
-    logger.info("Parsed webhook fields: call_id=%s, phone=%s, gclid=%s, lead_status=%s",
-                call_id, phone, gclid, lead_status)
+    logger.info(
+        "Parsed webhook fields: call_id=%s, phone=%s, gclid=%s, lead_status=%s",
+        call_id,
+        phone,
+        gclid,
+        lead_status,
+    )
 
-    # --- Save or reuse CallRecord
+    # --- Create or reuse CallRecord
     record, created = CallRecord.objects.get_or_create(
         callrail_id=call_id,
         defaults={
@@ -90,18 +139,28 @@ def callrail_webhook(request):
     else:
         logger.info("Duplicate CallRecord received: %s", record.id)
 
-    # --- Trigger async processing if lead is qualified
-    if lead_status in ["good", "qualified"]:
-        logger.info("Lead is qualified. Triggering process_call_record for record %s", record.id)
+    # --- Qualification Logic (lead_status OR milestone)
+    if is_call_qualified(lead_status, data):
+        logger.info(
+            "✅ Qualified call detected — status=%s | milestones=%s | record_id=%s",
+            lead_status,
+            list((data.get('milestones') or {}).keys()),
+            record.id,
+        )
         process_call_record.delay(record.id)
     else:
-        logger.info("Lead status not qualified: %s", lead_status)
+        logger.info(
+            "❌ Skipped unqualified call — status=%s | milestones=%s",
+            lead_status,
+            list((data.get('milestones') or {}).keys()),
+        )
 
     return JsonResponse({"status": "received"})
 
 
-
-
+# ---------------------------------------------------------
+# Paginated list of CallRail records
+# ---------------------------------------------------------
 @api_view(["GET"])
 def callrail_records(request):
     """
@@ -109,18 +168,17 @@ def callrail_records(request):
     """
     records = CallRecord.objects.all().order_by("-created_at")
 
-    # Initialize paginator
     paginator = PageNumberPagination()
-    paginator.page_size = 20  # you can adjust this (e.g., 10, 50, etc.)
-    
-    # Paginate queryset
+    paginator.page_size = 20
     result_page = paginator.paginate_queryset(records, request)
     serializer = CallRecordSerializer(result_page, many=True)
-    
-    # Return paginated response
+
     return paginator.get_paginated_response(serializer.data)
 
 
+# ---------------------------------------------------------
+# List Shopmonkey Orders
+# ---------------------------------------------------------
 @api_view(["GET"])
 def shopmonkey_orders(request):
     """
@@ -131,6 +189,9 @@ def shopmonkey_orders(request):
     return Response(serializer.data)
 
 
+# ---------------------------------------------------------
+# List Offline Conversions
+# ---------------------------------------------------------
 @api_view(["GET"])
 def offline_conversions(request):
     """
