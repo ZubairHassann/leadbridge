@@ -103,14 +103,22 @@ def process_call_record(self, record_id: int):
             # ======================================
             if gclid:
                 print(f"📤 Uploading conversion via GCLID={gclid}")
+
+                # 🛠 Safely parse completedAt or fallback to now
+                completed_iso = o.get("completedAt") or o.get("completed_at")
+                if isinstance(completed_iso, str):
+                    completed_dt = parse_datetime(completed_iso)
+                else:
+                    completed_dt = None
+
+                conv_time = format_ads_datetime(completed_dt or now_dt)
+
                 try:
                     resp = upload_gclid_conversion(
                         customer_id=str(settings.GOOGLE_CUSTOMER_ID).replace("-", ""),
                         conversion_action_resource=settings.GOOGLE_CONVERSION_ACTION_RESOURCE,
                         gclid=gclid,
-                        conversion_date_time=format_ads_datetime(
-                            parse_datetime(o.get("completedAt") or o.get("completed_at")) or now_dt
-                        ),
+                        conversion_date_time=conv_time,
                         value=float(value),
                         currency=getattr(settings, "GOOGLE_CURRENCY_CODE", "USD"),
                         order_id=order_id or None,
@@ -118,8 +126,9 @@ def process_call_record(self, record_id: int):
                 except GoogleAdsException as ex:
                     print("⚠️ Google Ads upload failed:", str(ex))
                     raise self.retry(exc=ex, countdown=90)
+
             else:
-                # Fallback to Enhanced Conversions (hashed phone/email)
+                # ⚙️ Fallback to Enhanced Conversions (hashed phone/email)
                 phone_hash = hash_identifier(record.phone)
                 email_hash = hash_identifier(record.payload.get("customer_email"))
                 if not (phone_hash or email_hash):
@@ -135,6 +144,7 @@ def process_call_record(self, record_id: int):
                     order_id=order_id,
                 )
 
+            # ✅ Save conversion record
             conv, created = OfflineConversion.objects.get_or_create(
                 gclid=gclid or phone_hash or email_hash,
                 order=order,
@@ -146,8 +156,10 @@ def process_call_record(self, record_id: int):
             conv.save(update_fields=["upload_response", "uploaded"])
             created_any = True
 
-        record.processed = True
-        record.save(update_fields=["processed"])
+            # ✅ Mark CallRecord processed after all orders
+            record.processed = True
+            record.save(update_fields=["processed"])
 
-    print(f"✅ Finished processing CallRecord {record_id} — created_any={created_any}")
-    return "ok" if created_any else "no_matching_orders"
+            print(f"✅ Finished processing CallRecord {record_id} — created_any={created_any}")
+            return "ok" if created_any else "no_matching_orders"
+
