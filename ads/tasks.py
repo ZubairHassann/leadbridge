@@ -37,7 +37,7 @@ def process_call_record(self, record_id: int):
     1. Fetches related Shopmonkey orders.
     2. Saves them in DB.
     3. Uploads conversion to Google Ads if criteria met.
-    Retries automatically if no orders found yet.
+    Retries automatically if order not yet closed or invoiced.
     """
 
     base = CallRecord.objects.only("id", "phone", "gclid", "processed").get(id=record_id)
@@ -60,6 +60,7 @@ def process_call_record(self, record_id: int):
         raise self.retry(exc=e, countdown=3600)  # retry in 1 hour if temporary error
 
     created_any = False
+    qualifying_found = False
     now_dt = timezone.now()
 
     with transaction.atomic():
@@ -80,10 +81,12 @@ def process_call_record(self, record_id: int):
 
             print(f"🧾 Order: archived={archived}, paid={paid}, invoiced={invoiced}, total_cents={total_cents}")
 
+            # Skip orders that aren't finalized yet
             if not ((archived or paid or invoiced) and total_cents > 0):
-                print("⏭️ Skipping non-qualifying order")
+                print("⏭️ Order not finalized yet — will recheck later.")
                 continue
 
+            qualifying_found = True  # At least one valid order exists
             order_id = str(o.get("id") or "")
 
             order, _ = ShopmonkeyOrder.objects.update_or_create(
@@ -120,6 +123,7 @@ def process_call_record(self, record_id: int):
                 except GoogleAdsException as ex:
                     print("⚠️ Google Ads upload failed:", str(ex))
                     raise self.retry(exc=ex, countdown=7200)  # retry in 2 hours
+
             else:
                 # Fallback to Enhanced Conversions (hashed identifiers)
                 phone_hash = hash_identifier(record.phone)
@@ -148,9 +152,14 @@ def process_call_record(self, record_id: int):
             conv.save(update_fields=["upload_response", "uploaded"])
             created_any = True
 
-        # ✅ Mark call record processed after all orders
-        record.processed = True
-        record.save(update_fields=["processed"])
+        # ✅ Mark processed only if conversion uploaded or qualifying order found
+        if created_any or qualifying_found:
+            record.processed = True
+            record.save(update_fields=["processed"])
+        else:
+            # Retry again in 24h if orders exist but none are finalized yet
+            print(f"🕓 Orders exist but none closed yet for {phone} — retrying in 24h.")
+            raise self.retry(countdown=86400)
 
     print(f"✅ Finished processing CallRecord {record_id} — created_any={created_any}")
-    return "ok" if created_any else "no_matching_orders"
+    return "ok" if created_any else "pending_orders"
