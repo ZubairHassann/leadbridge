@@ -164,7 +164,7 @@ def send_offline_conversion_to_google(
 
 def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conversion_time=None, order_id=None):
     """
-    Uploads Enhanced Conversion using hashed identifiers.
+    Uploads Enhanced Conversion using hashed identifiers (phone/email).
     """
     from google.ads.googleads.client import GoogleAdsClient
 
@@ -184,26 +184,22 @@ def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conv
     conversion.conversion_value = float(value)
     conversion.conversion_date_time = conversion_time
     conversion.currency_code = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
+
     if order_id:
         conversion.order_id = str(order_id)
 
-    # ✅ Properly add hashed identifiers
-    user_identifiers = []
-
+    # ✅ Add user identifiers properly
     if phone_hash:
-        uid = user_identifier_type()
+        uid = user_identifier_type
         uid.hashed_phone_number = phone_hash
         uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
-        user_identifiers.append(uid)
+        conversion.user_identifiers.append(uid)
 
     if email_hash:
-        uid = user_identifier_type()
+        uid = user_identifier_type
         uid.hashed_email = email_hash
         uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
-        user_identifiers.append(uid)
-
-    if user_identifiers:
-        conversion.user_identifiers.extend(user_identifiers)
+        conversion.user_identifiers.append(uid)
 
     # ✅ Prepare request
     request = client.get_type("UploadClickConversionsRequest")
@@ -220,4 +216,3 @@ def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conv
         for r in response.results
     ]
     return {"results": results}
-
