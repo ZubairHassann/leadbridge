@@ -178,6 +178,7 @@ def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conv
 
     service = client.get_service("ConversionUploadService")
     conversion = client.get_type("ClickConversion")
+    user_identifier_type = client.get_type("UserIdentifier")
 
     conversion.conversion_action = settings.GOOGLE_CONVERSION_ACTION_RESOURCE
     conversion.conversion_value = float(value)
@@ -186,22 +187,37 @@ def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conv
     if order_id:
         conversion.order_id = str(order_id)
 
-    # Add user identifiers
+    # ✅ Properly add hashed identifiers
+    user_identifiers = []
+
     if phone_hash:
-        uid = conversion.user_identifiers.add()
+        uid = user_identifier_type()
         uid.hashed_phone_number = phone_hash
         uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
+        user_identifiers.append(uid)
 
     if email_hash:
-        uid = conversion.user_identifiers.add()
+        uid = user_identifier_type()
         uid.hashed_email = email_hash
         uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
+        user_identifiers.append(uid)
 
+    if user_identifiers:
+        conversion.user_identifiers.extend(user_identifiers)
+
+    # ✅ Prepare request
     request = client.get_type("UploadClickConversionsRequest")
     request.customer_id = str(settings.GOOGLE_CUSTOMER_ID).replace("-", "")
     request.conversions.append(conversion)
     request.partial_failure = True
 
+    print("🚀 Starting upload_enhanced_conversion...")
     response = service.upload_click_conversions(request=request)
-    results = [{"conversion_action": r.conversion_action, "success": True} for r in response.results]
+    print("✅ Upload complete, parsing results...")
+
+    results = [
+        {"conversion_action": r.conversion_action, "success": True}
+        for r in response.results
+    ]
     return {"results": results}
+
