@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import callrail_records, callrail_webhook, offline_conversions, shopmonkey_orders
+from .views import callrail_records, callrail_webhook, offline_conversions, qualified_calls, shopmonkey_orders
 
 urlpatterns = [
     # Webhook endpoint that CallRail will post to
@@ -8,5 +8,6 @@ urlpatterns = [
     path("callrail-records/", callrail_records, name="callrail_records"),
     path("shopmonkey-orders/", shopmonkey_orders, name="shopmonkey_orders"),
     path("offline-conversions/", offline_conversions, name="offline_conversions"),
+    path("qualified-calls/", qualified_calls, name="qualified_calls"),
 ]
 

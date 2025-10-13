@@ -200,3 +200,35 @@ def offline_conversions(request):
     conversions = OfflineConversion.objects.all().order_by("-created_at")
     serializer = OfflineConversionSerializer(conversions, many=True)
     return Response(serializer.data)
+
+
+@api_view(["GET"])
+def qualified_calls(request):
+    """
+    List all qualified calls (based on lead_status or milestones)
+    and show their processing results.
+    """
+
+    records = CallRecord.objects.all().order_by("-created_at")
+
+    qualified_records = []
+    for record in records:
+        if is_call_qualified(record.lead_status, record.payload):
+            # Find related conversion if exists
+            conversion = OfflineConversion.objects.filter(order__phone=record.phone).first()
+            order = ShopmonkeyOrder.objects.filter(phone=record.phone).first()
+
+            qualified_records.append({
+                "id": record.id,
+                "phone": record.phone,
+                "lead_status": record.lead_status,
+                "caller_name": record.caller_name,
+                "created_at": record.created_at,
+                "processed": record.processed,
+                "has_shopmonkey_order": bool(order),
+                "has_offline_conversion": bool(conversion),
+                "conversion_uploaded": bool(conversion and conversion.uploaded),
+                "conversion_value": float(conversion.value) if conversion else None,
+            })
+
+    return Response(qualified_records)
