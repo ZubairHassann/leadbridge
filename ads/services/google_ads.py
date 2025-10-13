@@ -173,6 +173,7 @@ def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conv
         "refresh_token": settings.GOOGLE_REFRESH_TOKEN,
         "client_id": settings.GOOGLE_CLIENT_ID,
         "client_secret": settings.GOOGLE_CLIENT_SECRET,
+        "use_proto_plus": True,
     })
 
     service = client.get_service("ConversionUploadService")
