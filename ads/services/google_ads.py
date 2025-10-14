@@ -8,12 +8,13 @@ from google.ads.googleads.v21.enums.types import (
     OfflineUserDataJobTypeEnum,
     UserIdentifierSourceEnum,
 )
-from google.ads.googleads.v21.resources.types import (
-    OfflineUserDataJob,
+from google.ads.googleads.v21.resources.types import OfflineUserDataJob
+from google.ads.googleads.v21.common.types import (
     UserData,
     UserIdentifier,
     TransactionAttribute,
 )
+
 from google.ads.googleads.v21.services.types import (
     AddOfflineUserDataJobOperationsRequest,
 )
