@@ -3,11 +3,11 @@ import logging
 import re
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
-from google.ads.googleads.v17.enums.types import (
+from google.ads.googleads.v18.enums.types import (
     OfflineUserDataJobTypeEnum,
     UserIdentifierSourceEnum,
 )
-from google.ads.googleads.v17.resources.types import (
+from google.ads.googleads.v18.resources.types import (
     OfflineUserDataJob,
     UserData,
     UserIdentifier,
