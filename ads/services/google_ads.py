@@ -1,22 +1,27 @@
 import hashlib
 import logging
 import re
+from django.conf import settings
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
-from google.ads.googleads.v14.enums.types import (
+from google.ads.googleads.v21.enums.types import (
     OfflineUserDataJobTypeEnum,
     UserIdentifierSourceEnum,
 )
-from google.ads.googleads.v14.resources.types import (
+from google.ads.googleads.v21.resources.types import (
     OfflineUserDataJob,
     UserData,
     UserIdentifier,
     TransactionAttribute,
 )
-from django.conf import settings
+from google.ads.googleads.v21.services.types import (
+    AddOfflineUserDataJobOperationsRequest,
+)
+from google.ads.googleads.v21.services.services.offline_user_data_job_service import (
+    OfflineUserDataJobServiceClient,
+)
 
 logger = logging.getLogger(__name__)
-
 
 # ===================================
 # Helper: Normalize + Hash Identifiers
@@ -26,8 +31,7 @@ def normalize_phone(phone: str):
     if not phone:
         return None
     digits = re.sub(r"[^0-9]", "", phone)
-    # Remove leading country code (like 1 for US)
-    return digits.lstrip("1")
+    return digits.lstrip("1")  # Remove leading country code (like 1 for US)
 
 
 def hash_identifier(value: str):
@@ -58,34 +62,31 @@ def upload_enhanced_conversion(
         return None
 
     try:
-        # Load client from yaml file (make sure GOOGLEADS_YAML_PATH exists)
         client = GoogleAdsClient.load_from_storage(settings.GOOGLEADS_YAML_PATH)
         service = client.get_service("OfflineUserDataJobService")
+        offline_user_data_job_service = OfflineUserDataJobServiceClient()
 
-        # Define a new Offline User Data Job
+        # ✅ Create a new OfflineUserDataJob
         job = OfflineUserDataJob(
             type_=OfflineUserDataJobTypeEnum.OFFLINE_USER_DATA_JOB_TYPE_STORE_SALES_UPLOAD_FIRST_PARTY,
         )
 
-        # Build operation
-        operation = client.get_type("OfflineUserDataJobOperation")
+        # Prepare UserData with identifiers
         user_data = UserData()
 
-        # Add hashed phone
         if phone_hash:
             user_id = UserIdentifier()
             user_id.hashed_phone_number = phone_hash
             user_id.user_identifier_source = UserIdentifierSourceEnum.FIRST_PARTY
             user_data.user_identifiers.append(user_id)
 
-        # Add hashed email
         if email_hash:
             user_id = UserIdentifier()
             user_id.hashed_email = email_hash
             user_id.user_identifier_source = UserIdentifierSourceEnum.FIRST_PARTY
             user_data.user_identifiers.append(user_id)
 
-        # Transaction attributes
+        # Add transaction attributes
         transaction = TransactionAttribute()
         transaction.transaction_amount_micros = int(value * 1_000_000)
         transaction.currency_code = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
@@ -94,15 +95,14 @@ def upload_enhanced_conversion(
             transaction.order_id = order_id
         user_data.transaction_attribute = transaction
 
-        # Add operation
-        operation.create = user_data
-
-        # Submit operations
-        response = service.add_offline_user_data_job_operations(
+        # Build the AddOfflineUserDataJobOperationsRequest
+        request = AddOfflineUserDataJobOperationsRequest(
             resource_name=job.resource_name,
             enable_partial_failure=True,
-            operations=[operation],
+            operations=[{"create": user_data}],
         )
+
+        response = offline_user_data_job_service.add_offline_user_data_job_operations(request=request)
 
         logger.info("✅ Enhanced Conversion uploaded successfully.")
         logger.debug(f"Google Ads Response: {response}")
