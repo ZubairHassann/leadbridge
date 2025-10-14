@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 from decouple import config
 from pathlib import Path
+import logging
 SHOPMONKEY_API_KEY = config('SHOPMONKEY_API_KEY')
 CALLRAIL_WEBHOOK_TOKEN = config('CALLRAIL_WEBHOOK_TOKEN', default='')
 GOOGLE_DEVELOPER_TOKEN = config('GOOGLE_DEVELOPER_TOKEN', default='')
@@ -32,7 +33,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-_8=%=@ri=t4z8jq%%l7v5fkuxvc^q)h1p6yx@0nm(9*)7^jqi!'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
+
 
 ALLOWED_HOSTS = ['c622f910e9ae.ngrok-free.app','127.0.0.1','34.235.137.175',"leadbridge.xtruckrepair.com",
     "www.leadbridge.xtruckrepair.com"]
@@ -133,5 +135,47 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+# Celery configuration
 CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
 CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
+
+# --------------------------------------
+# Logging for Google Ads API & Celery
+# --------------------------------------
+
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': '/var/log/celery/google_ads_debug.log',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'google.ads.googleads.client': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+        'celery': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
+
+

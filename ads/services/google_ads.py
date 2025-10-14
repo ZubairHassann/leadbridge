@@ -1,218 +1,118 @@
-from __future__ import annotations
-from typing import Optional
-from datetime import datetime
-import json
-
-from django.conf import settings
-from django.utils import timezone
-
+import hashlib
+import logging
+import re
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
+from google.ads.googleads.v17.enums.types import (
+    OfflineUserDataJobTypeEnum,
+    UserIdentifierSourceEnum,
+)
+from google.ads.googleads.v17.resources.types import (
+    OfflineUserDataJob,
+    UserData,
+    UserIdentifier,
+    TransactionAttribute,
+)
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
-# ==============================================================
-# 🕒 Helper — Format date for Google Ads
-# ==============================================================
-def format_ads_datetime(dt: datetime) -> str:
-    """
-    Google Ads expects: 'YYYY-MM-DD HH:MM:SS±HH:MM' (account timezone offset included).
-    If dt is naive, we make it aware using Django's current timezone.
-    """
-    if dt.tzinfo is None:
-        dt = timezone.make_aware(dt, timezone.get_current_timezone())
-
-    # Python's %z gives +0500; convert to +05:00
-    offset = dt.strftime("%z")  # e.g. '+0500'
-    offset_colon = f"{offset[:-2]}:{offset[-2:]}" if offset else "+00:00"
-    return f"{dt.strftime('%Y-%m-%d %H:%M:%S')}{offset_colon}"
+# ===================================
+# Helper: Normalize + Hash Identifiers
+# ===================================
+def normalize_phone(phone: str):
+    """Remove symbols, spaces, country code, and return digits only."""
+    if not phone:
+        return None
+    digits = re.sub(r"[^0-9]", "", phone)
+    # Remove leading country code (like 1 for US)
+    return digits.lstrip("1")
 
 
-# ==============================================================
-# ⚙️ Helper — Build Google Ads API Client
-# ==============================================================
-def build_client() -> GoogleAdsClient:
-    """
-    Builds a GoogleAdsClient from Django settings,
-    including manager (MCC) and client Ads account IDs.
-    """
-    cfg = {
-        "developer_token": settings.GOOGLE_DEVELOPER_TOKEN,
-        "use_proto_plus": True,
-        "refresh_token": settings.GOOGLE_REFRESH_TOKEN,
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "client_secret": settings.GOOGLE_CLIENT_SECRET,
-    }
-
-    # ✅ Include manager (MCC) ID only if present
-    login_customer_id = getattr(settings, "GOOGLE_LOGIN_CUSTOMER_ID", None)
-    if login_customer_id:
-        cfg["login_customer_id"] = str(login_customer_id)
-
-    return GoogleAdsClient.load_from_dict(cfg)
+def hash_identifier(value: str):
+    """Lowercase + SHA256 hash for phone/email."""
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-
-
-# ==============================================================
-# 🚀 Upload a single offline conversion (GCLID-based)
-# ==============================================================
-def upload_gclid_conversion(
-    *,
-    customer_id: str,
-    conversion_action_resource: str,
-    gclid: str,
-    conversion_date_time: str,
-    value: float,
-    currency: str = None,
-    order_id: Optional[str] = None,
-    validate_only: Optional[bool] = None,
+# ===================================
+# Enhanced Conversion Upload
+# ===================================
+def upload_enhanced_conversion(
+    phone_hash=None,
+    email_hash=None,
+    value=0.0,
+    conversion_time=None,
+    order_id=None,
 ):
     """
-    Upload a single GCLID-based offline conversion (ClickConversion).
-
-    Returns:
-        dict: JSON-serializable response with results and/or partial failure.
+    Upload an enhanced conversion for leads using hashed user data.
+    Works without GCLID. Logs all Google Ads responses for debugging.
     """
-    if not currency:
-        currency = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
 
-    if validate_only is None:
-        validate_only = bool(getattr(settings, "GOOGLE_VALIDATE_ONLY", False))
-
-    client = build_client()
-    service = client.get_service("ConversionUploadService")
-
-    conversion = client.get_type("ClickConversion")
-    conversion.gclid = gclid
-    conversion.conversion_action = conversion_action_resource
-    conversion.conversion_date_time = conversion_date_time
-    conversion.conversion_value = float(value)
-    conversion.currency_code = currency
-    if order_id:
-        conversion.order_id = str(order_id)
-
-    request = client.get_type("UploadClickConversionsRequest")
-    request.customer_id = str(customer_id)
-    request.conversions.append(conversion)
-    request.partial_failure = True
-    request.validate_only = validate_only
+    if not (phone_hash or email_hash):
+        logger.warning("⚠️ No identifiers provided — skipping enhanced conversion upload.")
+        return None
 
     try:
-        response = service.upload_click_conversions(request=request)
-        results = []
+        # Load client from yaml file (make sure GOOGLEADS_YAML_PATH exists)
+        client = GoogleAdsClient.load_from_storage(settings.GOOGLEADS_YAML_PATH)
+        service = client.get_service("OfflineUserDataJobService")
 
-        # Extract detailed results
-        for res in response.results:
-            res_data = {
-                "gclid": getattr(res, "gclid", None),
-                "conversion_action": getattr(res, "conversion_action", None),
-                "success": bool(getattr(res, "gclid", None)),
-            }
-            results.append(res_data)
+        # Define a new Offline User Data Job
+        job = OfflineUserDataJob(
+            type_=OfflineUserDataJobTypeEnum.OFFLINE_USER_DATA_JOB_TYPE_STORE_SALES_UPLOAD_FIRST_PARTY,
+        )
 
-        # Partial failure handling
-        partial_error = None
-        if response.partial_failure_error:
-            partial_error = response.partial_failure_error.message
-            print(f"⚠️ Partial failure from Google Ads: {partial_error}")
-        else:
-            print("✅ Conversion upload successful:", results)
+        # Build operation
+        operation = client.get_type("OfflineUserDataJobOperation")
+        user_data = UserData()
 
-        # Return structured dict (easy to log or save in DB)
-        return {
-            "results": results,
-            "partial_failure": partial_error,
-        }
+        # Add hashed phone
+        if phone_hash:
+            user_id = UserIdentifier()
+            user_id.hashed_phone_number = phone_hash
+            user_id.user_identifier_source = UserIdentifierSourceEnum.FIRST_PARTY
+            user_data.user_identifiers.append(user_id)
+
+        # Add hashed email
+        if email_hash:
+            user_id = UserIdentifier()
+            user_id.hashed_email = email_hash
+            user_id.user_identifier_source = UserIdentifierSourceEnum.FIRST_PARTY
+            user_data.user_identifiers.append(user_id)
+
+        # Transaction attributes
+        transaction = TransactionAttribute()
+        transaction.transaction_amount_micros = int(value * 1_000_000)
+        transaction.currency_code = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
+        transaction.transaction_date_time = conversion_time
+        if order_id:
+            transaction.order_id = order_id
+        user_data.transaction_attribute = transaction
+
+        # Add operation
+        operation.create = user_data
+
+        # Submit operations
+        response = service.add_offline_user_data_job_operations(
+            resource_name=job.resource_name,
+            enable_partial_failure=True,
+            operations=[operation],
+        )
+
+        logger.info("✅ Enhanced Conversion uploaded successfully.")
+        logger.debug(f"Google Ads Response: {response}")
+        return response
 
     except GoogleAdsException as ex:
-        # Capture full failure info for logs
-        error_info = {
-            "request_id": ex.request_id,
-            "failure": str(ex.failure),
-            "error_code": ex.error.code().name if ex.error else None,
-        }
-        print("🚨 GoogleAdsException:", json.dumps(error_info, indent=2))
-        return {"error": error_info}
-
-
-# ==============================================================
-# 🧩 Legacy Wrapper (Backward Compatibility)
-# ==============================================================
-def send_offline_conversion_to_google(
-    gclid: str,
-    conversion_time: str,
-    value: float,
-    external_id: Optional[str] = None,
-):
-    """
-    Legacy wrapper for existing code paths.
-    Uses settings.GOOGLE_CUSTOMER_ID and settings.GOOGLE_CONVERSION_ACTION_RESOURCE.
-    """
-    customer_id = str(settings.GOOGLE_CUSTOMER_ID)
-    action_resource = settings.GOOGLE_CONVERSION_ACTION_RESOURCE
-
-    return upload_gclid_conversion(
-        customer_id=customer_id,
-        conversion_action_resource=action_resource,
-        gclid=gclid,
-        conversion_date_time=conversion_time,
-        value=float(value),
-        currency=getattr(settings, "GOOGLE_CURRENCY_CODE", "USD"),
-        order_id=external_id,
-        validate_only=bool(getattr(settings, "GOOGLE_VALIDATE_ONLY", False)),
-    )
-
-def upload_enhanced_conversion(phone_hash=None, email_hash=None, value=0.0, conversion_time=None, order_id=None):
-    """
-    Uploads Enhanced Conversion using hashed identifiers (phone/email).
-    """
-    from google.ads.googleads.client import GoogleAdsClient
-
-    client = GoogleAdsClient.load_from_dict({
-        "developer_token": settings.GOOGLE_DEVELOPER_TOKEN,
-        "refresh_token": settings.GOOGLE_REFRESH_TOKEN,
-        "client_id": settings.GOOGLE_CLIENT_ID,
-        "client_secret": settings.GOOGLE_CLIENT_SECRET,
-        "use_proto_plus": True,
-    })
-
-    service = client.get_service("ConversionUploadService")
-    conversion = client.get_type("ClickConversion")
-    user_identifier_type = client.get_type("UserIdentifier")
-
-    conversion.conversion_action = settings.GOOGLE_CONVERSION_ACTION_RESOURCE
-    conversion.conversion_value = float(value)
-    conversion.conversion_date_time = conversion_time
-    conversion.currency_code = getattr(settings, "GOOGLE_CURRENCY_CODE", "USD")
-
-    if order_id:
-        conversion.order_id = str(order_id)
-
-    # ✅ Add user identifiers properly
-    if phone_hash:
-        uid = user_identifier_type
-        uid.hashed_phone_number = phone_hash
-        uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
-        conversion.user_identifiers.append(uid)
-
-    if email_hash:
-        uid = user_identifier_type
-        uid.hashed_email = email_hash
-        uid.user_identifier_source = client.enums.UserIdentifierSourceEnum.FIRST_PARTY
-        conversion.user_identifiers.append(uid)
-
-    # ✅ Prepare request
-    request = client.get_type("UploadClickConversionsRequest")
-    request.customer_id = str(settings.GOOGLE_CUSTOMER_ID).replace("-", "")
-    request.conversions.append(conversion)
-    request.partial_failure = True
-
-    print("🚀 Starting upload_enhanced_conversion...")
-    response = service.upload_click_conversions(request=request)
-    print("✅ Upload complete, parsing results...")
-
-    results = [
-        {"conversion_action": r.conversion_action, "success": True}
-        for r in response.results
-    ]
-    return {"results": results}
+        logger.error(f"❌ Google Ads API Error: {ex.failure}")
+        for error in ex.failure.errors:
+            logger.error(f"  → {error.error_code} | {error.message}")
+        return None
+    except Exception as e:
+        logger.exception(f"❌ Unexpected error uploading enhanced conversion: {e}")
+        return None

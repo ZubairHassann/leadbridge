@@ -5,7 +5,7 @@ from celery import shared_task
 from django.db import transaction
 from google.ads.googleads.errors import GoogleAdsException
 from django.conf import settings
-import hashlib
+import hashlib, logging, re
 
 from .models import CallRecord, ShopmonkeyOrder, OfflineConversion
 from .services.shopmonkey import fetch_orders_by_phone, ShopmonkeyWAFBlocked
@@ -15,12 +15,21 @@ from ads.services.google_ads import (
     upload_enhanced_conversion,
 )
 
+logger = logging.getLogger(__name__)
 
-# ==========================
-# Helper: Hash identifiers
-# ==========================
+# ==============================
+# Helpers for Enhanced Conversion
+# ==============================
+def normalize_phone(phone: str):
+    """Strip non-digits and leading country code."""
+    if not phone:
+        return None
+    digits = re.sub(r"[^0-9]", "", phone)
+    return digits.lstrip("1")
+
+
 def hash_identifier(value: str):
-    """Normalize and hash a phone or email for Enhanced Conversions."""
+    """Lowercase + SHA256 hash for phone/email."""
     if not value:
         return None
     normalized = value.strip().lower()
@@ -34,30 +43,30 @@ def hash_identifier(value: str):
 def process_call_record(self, record_id: int):
     """
     Processes a CallRecord:
-    1. Fetches related Shopmonkey orders.
-    2. Saves them in DB.
-    3. Uploads conversion to Google Ads if criteria met.
-    Retries automatically if order not yet closed or invoiced.
+    1️⃣ Fetches related Shopmonkey orders.
+    2️⃣ Saves them in DB.
+    3️⃣ Uploads conversions to Google Ads (GCLID or Enhanced).
+    Retries automatically if no qualifying orders yet.
     """
 
     base = CallRecord.objects.only("id", "phone", "gclid", "processed").get(id=record_id)
     phone = base.phone
     gclid = base.gclid
 
-    print(f"📞 Processing CallRecord ID={record_id}, phone={phone}, gclid={gclid}")
+    logger.warning(f"📞 Processing CallRecord ID={record_id}, phone={phone}, gclid={gclid}")
 
-    # Step 1 — Fetch orders from Shopmonkey
+    # Step 1 — Fetch Shopmonkey Orders
     try:
         orders = fetch_orders_by_phone(phone)
         if not orders:
-            print(f"⏳ No orders found yet for {phone} — retrying in 24 hours.")
+            logger.warning(f"⏳ No orders found yet for {phone} — retrying in 24 hours.")
             raise self.retry(countdown=86400)
     except ShopmonkeyWAFBlocked:
-        print("🚫 Shopmonkey WAF blocked the request.")
+        logger.error("🚫 Shopmonkey WAF blocked the request.")
         return "waf_blocked"
     except Exception as e:
-        print("❌ Error fetching orders:", str(e))
-        raise self.retry(exc=e, countdown=3600)  # retry in 1 hour if temporary error
+        logger.exception(f"❌ Error fetching orders: {e}")
+        raise self.retry(exc=e, countdown=3600)
 
     created_any = False
     qualifying_found = False
@@ -66,7 +75,7 @@ def process_call_record(self, record_id: int):
     with transaction.atomic():
         record = CallRecord.objects.select_for_update().get(id=record_id)
         if record.processed:
-            print("ℹ️ Already processed — skipping duplicate run.")
+            logger.info("ℹ️ Already processed — skipping duplicate run.")
             return "already_processed"
 
         for o in orders:
@@ -79,14 +88,15 @@ def process_call_record(self, record_id: int):
             except (TypeError, ValueError):
                 total_cents = 0
 
-            print(f"🧾 Order: archived={archived}, paid={paid}, invoiced={invoiced}, total_cents={total_cents}")
+            logger.warning(
+                f"🧾 Order: archived={archived}, paid={paid}, invoiced={invoiced}, total_cents={total_cents}"
+            )
 
-            # Skip orders that aren't finalized yet
             if not ((archived or paid or invoiced) and total_cents > 0):
-                print("⏭️ Order not finalized yet — will recheck later.")
+                logger.info("⏭️ Order not finalized yet — will recheck later.")
                 continue
 
-            qualifying_found = True  # At least one valid order exists
+            qualifying_found = True
             order_id = str(o.get("id") or "")
 
             order, _ = ShopmonkeyOrder.objects.update_or_create(
@@ -101,11 +111,11 @@ def process_call_record(self, record_id: int):
 
             value = Decimal(total_cents) / Decimal(100) if total_cents else Decimal("0")
 
-            # ================================
-            # Upload logic — GCLID or Enhanced
-            # ================================
+            # ========================================
+            # Upload logic — GCLID or Enhanced Conversion
+            # ========================================
             if gclid:
-                print(f"📤 Uploading conversion via GCLID={gclid}")
+                logger.warning(f"📤 Uploading conversion via GCLID={gclid}")
                 completed_iso = o.get("completedAt") or o.get("completed_at")
                 completed_dt = parse_datetime(completed_iso) if isinstance(completed_iso, str) else None
                 conv_time = format_ads_datetime(completed_dt or now_dt)
@@ -120,19 +130,21 @@ def process_call_record(self, record_id: int):
                         currency=getattr(settings, "GOOGLE_CURRENCY_CODE", "USD"),
                         order_id=order_id or None,
                     )
+                    logger.info(f"✅ GCLID upload response: {getattr(resp, 'results', 'No results')}")
                 except GoogleAdsException as ex:
-                    print("⚠️ Google Ads upload failed:", str(ex))
-                    raise self.retry(exc=ex, countdown=7200)  # retry in 2 hours
+                    logger.error(f"⚠️ Google Ads upload failed: {ex}")
+                    raise self.retry(exc=ex, countdown=7200)
 
             else:
-                # Fallback to Enhanced Conversions (hashed identifiers)
-                phone_hash = hash_identifier(record.phone)
+                # Enhanced Conversion Upload (Hashed Identifiers)
+                phone_hash = hash_identifier(normalize_phone(record.phone))
                 email_hash = hash_identifier(record.payload.get("customer_email"))
+
                 if not (phone_hash or email_hash):
-                    print("⚠️ Skipping upload — no GCLID or user identifiers available.")
+                    logger.warning("⚠️ Skipping upload — no GCLID or user identifiers available.")
                     continue
 
-                print("📤 Uploading via Enhanced Conversion (hashed phone/email)")
+                logger.warning("📤 Uploading via Enhanced Conversion (hashed phone/email)")
                 resp = upload_enhanced_conversion(
                     phone_hash=phone_hash,
                     email_hash=email_hash,
@@ -140,6 +152,14 @@ def process_call_record(self, record_id: int):
                     conversion_time=format_ads_datetime(now_dt),
                     order_id=order_id,
                 )
+
+                # ✅ Match-rate logging
+                if resp and hasattr(resp, "partial_failure_error"):
+                    logger.warning(f"⚠️ Partial Failure: {resp.partial_failure_error.message}")
+                elif not resp:
+                    logger.warning("⚠️ No response — likely no user data matched (Google couldn’t find user).")
+                else:
+                    logger.info("✅ Enhanced Conversion accepted by Google Ads (match pending confirmation).")
 
             # ✅ Save conversion record
             conv, created = OfflineConversion.objects.get_or_create(
@@ -152,14 +172,13 @@ def process_call_record(self, record_id: int):
             conv.save(update_fields=["upload_response", "uploaded"])
             created_any = True
 
-        # ✅ Mark processed only if conversion uploaded or qualifying order found
+        # ✅ Mark record processed only if qualifying or uploaded
         if created_any or qualifying_found:
             record.processed = True
             record.save(update_fields=["processed"])
         else:
-            # Retry again in 24h if orders exist but none are finalized yet
-            print(f"🕓 Orders exist but none closed yet for {phone} — retrying in 24h.")
+            logger.warning(f"🕓 Orders exist but none closed yet for {phone} — retrying in 24h.")
             raise self.retry(countdown=86400)
 
-    print(f"✅ Finished processing CallRecord {record_id} — created_any={created_any}")
+    logger.info(f"✅ Finished processing CallRecord {record_id} — created_any={created_any}")
     return "ok" if created_any else "pending_orders"

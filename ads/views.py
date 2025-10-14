@@ -21,7 +21,6 @@ from .serializers import (
 # ---------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------
 # Helper function — determines if a call is qualified
 # ---------------------------------------------------------
@@ -44,7 +43,6 @@ def is_call_qualified(lead_status: str, payload: dict) -> bool:
         or has_qualified_milestone
     )
 
-
 # ---------------------------------------------------------
 # CallRail Webhook
 # ---------------------------------------------------------
@@ -55,7 +53,6 @@ def callrail_webhook(request):
     Accepts token via query string (?token=...) or header (X-Token).
     Supports both JSON body and query params.
     """
-
     if request.method != "POST":
         return JsonResponse({"error": "Invalid method"}, status=405)
 
@@ -157,7 +154,6 @@ def callrail_webhook(request):
 
     return JsonResponse({"status": "received"})
 
-
 # ---------------------------------------------------------
 # Paginated list of CallRail records
 # ---------------------------------------------------------
@@ -175,7 +171,6 @@ def callrail_records(request):
 
     return paginator.get_paginated_response(serializer.data)
 
-
 # ---------------------------------------------------------
 # List Shopmonkey Orders
 # ---------------------------------------------------------
@@ -185,9 +180,11 @@ def shopmonkey_orders(request):
     List all Shopmonkey orders fetched from API.
     """
     orders = ShopmonkeyOrder.objects.all().order_by("-fetched_at")
-    serializer = ShopmonkeyOrderSerializer(orders, many=True)
-    return Response(serializer.data)
-
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(orders, request)
+    serializer = ShopmonkeyOrderSerializer(result_page, many=True)
+    return paginator.get_paginated_response(serializer.data)
 
 # ---------------------------------------------------------
 # List Offline Conversions
@@ -198,23 +195,25 @@ def offline_conversions(request):
     List all Google Ads conversions uploaded.
     """
     conversions = OfflineConversion.objects.all().order_by("-created_at")
-    serializer = OfflineConversionSerializer(conversions, many=True)
-    return Response(serializer.data)
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(conversions, request)
+    serializer = OfflineConversionSerializer(result_page, many=True)
+    return paginator.get_paginated_response(serializer.data)
 
-
+# ---------------------------------------------------------
+# Qualified Calls View (Paginated)
+# ---------------------------------------------------------
 @api_view(["GET"])
 def qualified_calls(request):
     """
-    List all qualified calls (based on lead_status or milestones)
-    and show their processing results.
+    Paginated list of qualified calls with related order/conversion info.
     """
-
     records = CallRecord.objects.all().order_by("-created_at")
 
     qualified_records = []
     for record in records:
         if is_call_qualified(record.lead_status, record.payload):
-            # Find related conversion if exists
             conversion = OfflineConversion.objects.filter(order__phone=record.phone).first()
             order = ShopmonkeyOrder.objects.filter(phone=record.phone).first()
 
@@ -231,4 +230,7 @@ def qualified_calls(request):
                 "conversion_value": float(conversion.value) if conversion else None,
             })
 
-    return Response(qualified_records)
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(qualified_records, request)
+    return paginator.get_paginated_response(result_page)
