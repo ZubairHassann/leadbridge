@@ -117,3 +117,59 @@ def upload_enhanced_conversion(
     except Exception as e:
         logger.exception(f"❌ Unexpected error uploading enhanced conversion: {e}")
         return None
+# ===================================
+# Standard GCLID Conversion Upload
+# ===================================
+def upload_gclid_conversion(
+    customer_id,
+    conversion_action_resource,
+    gclid,
+    conversion_date_time,
+    value,
+    currency,
+    order_id=None,
+):
+    """
+    Uploads a conversion tied to a GCLID (Google Click ID).
+    """
+    try:
+        client = GoogleAdsClient.load_from_storage(settings.GOOGLEADS_YAML_PATH)
+        service = client.get_service("ConversionUploadService")
+
+        conversion = client.get_type("ClickConversion")
+        conversion.gclid = gclid
+        conversion.conversion_action = conversion_action_resource
+        conversion.conversion_date_time = conversion_date_time
+        conversion.conversion_value = value
+        conversion.currency_code = currency
+        if order_id:
+            conversion.order_id = order_id
+
+        request = client.get_type("UploadClickConversionsRequest")
+        request.customer_id = customer_id
+        request.conversions.append(conversion)
+        request.partial_failure = True
+
+        response = service.upload_click_conversions(request=request)
+        logger.info("✅ GCLID Conversion uploaded successfully.")
+        logger.debug(f"Response: {response}")
+        return response
+
+    except GoogleAdsException as ex:
+        logger.error(f"❌ Google Ads GCLID upload failed: {ex.failure}")
+        for error in ex.failure.errors:
+            logger.error(f"  → {error.error_code} | {error.message}")
+        return None
+
+
+# ===================================
+# Helper: Format Google Ads datetime
+# ===================================
+def format_ads_datetime(dt):
+    """Convert a Python datetime to RFC3339 format used by Google Ads."""
+    if not dt:
+        return None
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    return dt.strftime("%Y-%m-%d %H:%M:%S%z")
+
