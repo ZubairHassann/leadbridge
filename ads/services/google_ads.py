@@ -21,7 +21,7 @@ from google.ads.googleads.v21.services.types import (
 from google.ads.googleads.v21.services.services.offline_user_data_job_service import (
     OfflineUserDataJobServiceClient,
 )
-
+from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 # ===================================
@@ -149,6 +149,7 @@ def upload_gclid_conversion(
         request.customer_id = customer_id
         request.conversions.append(conversion)
         request.partial_failure = True
+        request.debug_enabled = True
 
         response = service.upload_click_conversions(request=request)
         logger.info("✅ GCLID Conversion uploaded successfully.")
