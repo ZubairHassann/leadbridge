@@ -7,7 +7,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-
+from django.db.models import Q
 from .models import CallRecord, ShopmonkeyOrder, OfflineConversion
 from .tasks import process_call_record
 from .serializers import (
@@ -214,7 +214,12 @@ def qualified_calls(request):
     qualified_records = []
     for record in records:
         if is_call_qualified(record.lead_status, record.payload):
-            conversion = OfflineConversion.objects.filter(order__phone=record.phone).first()
+            conversion = (
+    OfflineConversion.objects.filter(
+        Q(order__phone=record.phone) | Q(gclid=record.gclid)
+    ).first()
+)
+
             order = ShopmonkeyOrder.objects.filter(phone=record.phone).first()
 
             qualified_records.append({
