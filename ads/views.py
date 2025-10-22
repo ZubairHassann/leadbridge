@@ -178,13 +178,26 @@ def callrail_records(request):
 def shopmonkey_orders(request):
     """
     List all Shopmonkey orders fetched from API.
+    Includes computed total_cost in dollars.
     """
     orders = ShopmonkeyOrder.objects.all().order_by("-fetched_at")
+
     paginator = PageNumberPagination()
     paginator.page_size = 20
     result_page = paginator.paginate_queryset(orders, request)
-    serializer = ShopmonkeyOrderSerializer(result_page, many=True)
-    return paginator.get_paginated_response(serializer.data)
+
+    formatted_orders = []
+    for order in result_page:
+        formatted_orders.append({
+            "id": order.id,
+            "phone": order.phone,
+            "archived": order.archived,
+            "fetched_at": order.fetched_at,
+            "total_cost": round(order.total_cents / 100, 2) if order.total_cents else 0.0,
+        })
+
+    return paginator.get_paginated_response(formatted_orders)
+
 
 # ---------------------------------------------------------
 # List Offline Conversions
