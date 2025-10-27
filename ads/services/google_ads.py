@@ -149,7 +149,7 @@ def upload_gclid_conversion(
         request.customer_id = customer_id
         request.conversions.append(conversion)
         request.partial_failure = True
-        request.debug_enabled = True
+        # request.debug_enabled = True
 
         response = service.upload_click_conversions(request=request)
         logger.info("✅ GCLID Conversion uploaded successfully.")
