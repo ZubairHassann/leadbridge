@@ -172,5 +172,10 @@ def format_ads_datetime(dt):
         return None
     if timezone.is_naive(dt):
         dt = timezone.make_aware(dt)
-    return dt.strftime("%Y-%m-%d %H:%M:%S%z")
+    formatted = dt.strftime("%Y-%m-%d %H:%M:%S%z")
+    # Convert +0000 → +00:00 (Google Ads requirement)
+    if len(formatted) > 2 and (formatted[-5] in ['+', '-']):
+        formatted = formatted[:-2] + ":" + formatted[-2:]
+    return formatted
+
 
