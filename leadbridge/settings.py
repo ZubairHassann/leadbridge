@@ -22,8 +22,11 @@ GOOGLE_CLIENT_SECRET = config('GOOGLE_CLIENT_SECRET', default='')
 GOOGLE_REFRESH_TOKEN = config('GOOGLE_REFRESH_TOKEN', default='')
 
 
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+import os
+GOOGLEADS_YAML_PATH = os.path.join(BASE_DIR, "google-ads.yaml")
 
 
 # Quick-start development settings - unsuitable for production
