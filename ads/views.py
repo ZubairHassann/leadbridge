@@ -48,111 +48,70 @@ def is_call_qualified(lead_status: str, payload: dict) -> bool:
 # ---------------------------------------------------------
 @csrf_exempt
 def callrail_webhook(request):
-    """
-    Webhook endpoint to receive call data from CallRail.
-    Accepts token via query string (?token=...) or header (X-Token).
-    Supports both JSON body and query params.
-    """
     if request.method != "POST":
         return JsonResponse({"error": "Invalid method"}, status=405)
 
-    # --- Security: token check
-    query_token = request.GET.get("token")
-    header_token = request.headers.get("X-Token")
-    if (
-        query_token != settings.CALLRAIL_WEBHOOK_TOKEN
-        and header_token != settings.CALLRAIL_WEBHOOK_TOKEN
-    ):
-        logger.warning(
-            "Unauthorized webhook attempt. Headers: %s | Params: %s",
-            request.headers,
-            request.GET.dict(),
-        )
+    # Secure token check
+    expected_token = getattr(settings, "CALLRAIL_WEBHOOK_TOKEN", "")
+    provided_token = request.GET.get("token") or request.headers.get("X-Token")
+
+    if expected_token and provided_token != expected_token:
+        logger.warning("Unauthorized webhook attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
-    # --- Parse body
+    # ---------- SAFE JSON PARSE ----------
     data = {}
     try:
-        if request.body:
+        if request.body and len(request.body) > 2:
             data = json.loads(request.body.decode("utf-8"))
-            logger.info("Webhook received JSON body: %s", data)
-    except json.JSONDecodeError:
-        logger.warning("Invalid JSON body. Falling back to form/query params.")
+    except Exception as e:
+        logger.warning("JSON parse issue: %s", e)
 
     if not data and request.POST:
         data = request.POST.dict()
-        logger.info("Webhook received form-encoded body: %s", data)
 
     if not data:
         data = request.GET.dict()
-        logger.info("Webhook received query params: %s", data)
 
-    # --- Extract fields
+    logger.info("Received sanitized payload: %s", data)
+
+    # Extract fields safely
     call_id = data.get("id") or data.get("resource_id") or f"call-{int(time.time())}"
     phone = (
         data.get("caller_number")
         or data.get("callernum")
         or data.get("customer_phone_number")
+        or ""
     )
-    gclid = data.get("gclid")
+    gclid = data.get("gclid") or None
     lead_status = (data.get("lead_status") or data.get("callsource") or "").lower()
-    duration = data.get("duration")
 
-    caller_name = data.get("callername")
-    caller_city = data.get("callercity")
-    caller_state = data.get("callerstate")
-    caller_country = data.get("callercountry")
-    tracking_number = data.get("trackingnum")
-    recording_url = data.get("recording")
+    # duration safe cast
+    try:
+        duration = int(data.get("duration")) if data.get("duration") else None
+    except:
+        duration = None
 
-    logger.info(
-        "Parsed webhook fields: call_id=%s, phone=%s, gclid=%s, lead_status=%s",
-        call_id,
-        phone,
-        gclid,
-        lead_status,
-    )
-
-    # --- Create or reuse CallRecord
     record, created = CallRecord.objects.get_or_create(
         callrail_id=call_id,
         defaults={
             "phone": phone,
             "gclid": gclid,
             "lead_status": lead_status,
-            "duration": int(duration) if duration else None,
-            "caller_name": caller_name,
-            "caller_city": caller_city,
-            "caller_state": caller_state,
-            "caller_country": caller_country,
-            "tracking_number": tracking_number,
-            "recording_url": recording_url,
+            "duration": duration,
             "payload": data,
         },
     )
 
-    if created:
-        logger.info("New CallRecord created: %s", record.id)
-    else:
-        logger.info("Duplicate CallRecord received: %s", record.id)
-
-    # --- Qualification Logic (lead_status OR milestone)
-    if is_call_qualified(lead_status, data):
-        logger.info(
-            "✅ Qualified call detected — status=%s | milestones=%s | record_id=%s",
-            lead_status,
-            list((data.get('milestones') or {}).keys()),
-            record.id,
-        )
-        process_call_record.delay(record.id)
-    else:
-        logger.info(
-            "❌ Skipped unqualified call — status=%s | milestones=%s",
-            lead_status,
-            list((data.get('milestones') or {}).keys()),
-        )
+    # Qualification safely checked
+    try:
+        if is_call_qualified(lead_status, data):
+            process_call_record.delay(record.id)
+    except Exception as e:
+        logger.exception("Qualification check crashed: %s", e)
 
     return JsonResponse({"status": "received"})
+
 
 # ---------------------------------------------------------
 # Paginated list of CallRail records
